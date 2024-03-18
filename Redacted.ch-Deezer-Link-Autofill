@@ -1,0 +1,337 @@
+// ==UserScript==
+// @name          Redacted.ch Deezer Link Autofill
+// @description   This script allows you to autofill various fields on Redacted.ch upload page - Credit HeroVax & ChatGPT
+// @license       https://github.com/herovaxy/Redacted.ch-Deezer-Autofill-Upload/blob/main/LICENSE
+// @namespace     HeroVax
+// @match         https://redacted.ch/upload.php*
+// @grant         GM_xmlhttpRequest
+// @version       1.1
+// @author        HeroVax
+// @description   3/17/2024, 5:53:32 PM
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // Mapping from Deezer release type to corresponding integer values
+    var releaseTypeMapping = {
+        "album": "1",
+        "soundtrack": "3",
+        "ep": "5",
+        "anthology": "6",
+        "single": "9"
+    };
+
+    // Function to transform Deezer release type to its corresponding integer code
+    function getReleaseTypeValue(releaseType) {
+        return releaseTypeMapping[releaseType] || "";
+    }
+
+    // Mapping from Deezer release type to corresponding string values
+    var releaseTypeStringMapping = {
+        "1": "Album",
+        "3": "Soundtrack",
+        "5": "EP",
+        "6": "Anthology",
+        "9": "Single"
+    };
+
+    // Function to transform Deezer release type to its corresponding string value
+    function getReleaseTypeString(releaseType) {
+        return releaseTypeStringMapping[releaseType] || "";
+    }
+
+    // Mapping genre for tags section
+    var genreMapping = {
+        "Rap/Hip Hop": "hip.hop",
+        "R&B": "rhythm.and.blues",
+        "Indie Rock/Rock pop": "indie.rock"
+    };
+
+    // Mapping genre for [URL] message section
+    var genreMappingMessage = {
+    "Rap/Hip Hop": "Hip Hop",
+    "Indie Rock/Rock pop": "Indie Rock"
+    };
+
+    // Function to generate album description
+    function generateAlbumDescription(artist, album, releaseType, labelForDescription, catalogueNumber, releaseDate, genre, genreRaw, tracklist) {
+        // Get the string representation of the release type
+        var releaseTypeString = getReleaseTypeString(releaseType);
+
+        let description = `[size=5][b][artist]${artist}[/artist] &ndash; ${album} (${releaseTypeString})[/b][/size]\n\n`;
+
+        // Replace spaces in labelForDescription with "+"
+        var labelForDescriptionURL = labelForDescription.replace(/\s/g, '+');
+
+        description += `[b]Label/Cat#:[/b] [url=https://redacted.ch/torrents.php?recordlabel=${labelForDescriptionURL}] ${labelForDescription}[/url] / ${catalogueNumber}\n`;
+
+        // Parse releaseDate into a Date object
+        var date = new Date(releaseDate);
+        // Format the year as DD-MM-YYYY
+        var formattedReleaseDate = `${('0' + date.getDate()).slice(-2)}-${('0' + (date.getMonth() + 1)).slice(-2)}-${date.getFullYear()}`;
+        description += `[b]Year:[/b] ${formattedReleaseDate}\n`;
+
+
+        // Split genres by comma and trim spaces
+        var genres = genre.split(',').map(g => g.trim());
+        // Split genreRaw by comma and trim spaces
+        var genreRaws = genreRaw.split(',').map(gr => gr.trim());
+
+        // If there's only one genre
+        if (genres.length === 1) {
+            description += `[b]Genre:[/b] [url=https://redacted.ch/torrents.php?taglist=${genre}] ${genreRaws[0]}[/url]\n\n`;
+        } else {
+            // If there are multiple genres
+            description += `[b]Genre:[/b] `;
+            genres.forEach((g, index) => {
+                description += `[url=https://redacted.ch/torrents.php?taglist=${g}] ${genreRaws[index]}[/url], `;
+            });
+            // Remove the trailing comma and space
+            description = description.slice(0, -2) + '\n\n';
+        }
+
+        description += tracklist; // Append tracklist
+
+        return description;
+    }
+
+    // Function to fetch data from Deezer API
+    function fetchDeezerData(deezerLink, callback) {
+        var albumId = extractAlbumId(deezerLink);
+        if (albumId) {
+            var apiUrl = `https://api.deezer.com/album/${albumId}`;
+            GM_xmlhttpRequest({
+                method: "GET",
+                url: apiUrl,
+                onload: function(response) {
+                    var data = JSON.parse(response.responseText);
+                    callback(data);
+                }
+            });
+        } else {
+            console.error("Invalid Deezer link provided.");
+        }
+    }
+
+    // Function to extract album ID from Deezer link
+    function extractAlbumId(deezerLink) {
+        var match = deezerLink.match(/\/album\/(\d+)/);
+        return match ? match[1] : null;
+    }
+
+    // Function to extract year (YYYY) from a date string
+    function extractYear(dateString) {
+        var match = dateString.match(/\d{4}/);
+        return match ? match[0] : '';
+    }
+
+    // Function to format duration from seconds to MM:SS
+    function formatDuration(seconds) {
+        var minutes = Math.floor(seconds / 60);
+        var remainingSeconds = seconds % 60;
+
+        return `${padNumber(minutes)}:${padNumber(remainingSeconds)}`;
+    }
+
+    // Function to pad single digit numbers with leading zero
+    function padNumber(number) {
+        return number < 10 ? `0${number}` : number;
+    }
+
+    // Create a new table row for the fields
+    var newRow = document.createElement('tr');
+    newRow.innerHTML = `
+        <td class="label">Deezer Link:</td>
+        <td>
+            <input type="text" id="fetch_deezer" name="fetch_deezer" size="30"/>
+            <button id="fetch_button">Fetch</button>
+        </td>
+    `;
+
+    // Insert the new row after the title_tr
+    var titleRow = document.getElementById('title_tr');
+    titleRow.parentNode.insertBefore(newRow, titleRow.nextSibling);
+
+    // Create input fields for Apple Music, Spotify, and Qobuz URLs
+    var additionalLinksRow = document.createElement('tr');
+    additionalLinksRow.innerHTML = `
+        <td class="label">Qobuz:</td>
+        <td><input type="text" id="qobuz_url" size="30"/></td>
+    `;
+    titleRow.parentNode.insertBefore(additionalLinksRow, newRow.nextSibling);
+
+    additionalLinksRow = document.createElement('tr');
+    additionalLinksRow.innerHTML = `
+        <td class="label">Spotify:</td>
+        <td><input type="text" id="spotify_url" size="30"/></td>
+    `;
+    titleRow.parentNode.insertBefore(additionalLinksRow, newRow.nextSibling);
+
+    additionalLinksRow = document.createElement('tr');
+    additionalLinksRow.innerHTML = `
+        <td class="label">Apple Music:</td>
+        <td><input type="text" id="apple_music_url" size="30"/></td>
+    `;
+    titleRow.parentNode.insertBefore(additionalLinksRow, newRow.nextSibling);
+
+    // Event listener for the fetch button
+    document.getElementById('fetch_button').addEventListener('click', function(event) {
+        event.preventDefault(); // Prevent form submission
+        var appleMusicURL = document.getElementById('apple_music_url').value;
+        var spotifyURL = document.getElementById('spotify_url').value;
+        var qobuzURL = document.getElementById('qobuz_url').value;
+
+
+        var deezerLink = document.getElementById('fetch_deezer').value;
+        fetchDeezerData(deezerLink, function(data) {
+            // Extract artist, album title, release date, release type, label, and UPC code from Deezer data
+            var artist = data.artist.name;
+            var album = data.title;
+            var releaseDate = data.release_date;
+            var releaseType = data.record_type;
+            var label = data.label;
+            var labelForDescription = data.label;
+            var catalogueNumber = data.upc; // Extract UPC code
+            // Convert Deezer release type to integer value expected by the select input field
+            var releaseTypeValue = getReleaseTypeValue(releaseType);
+            var releaseYear = data.release_date;
+            var genre = ""; // Initialize genre variable
+            var genreRaw = "";
+            //var imageId = data.cover_xl; // Adjust this according to the structure of your Deezer data
+            var imageUrl = data.cover_xl;
+
+            if (data.genres && data.genres.data.length > 0) {
+                // If genres information exists and there are genres available
+                var genreNames = data.genres.data.map(function(genreData) {
+                    return (genreMapping[genreData.name] || genreData.name.replace(/\s/g, '.')).toLowerCase(); // Use mapping if available, otherwise replace spaces with periods
+                });
+                genre = genreNames.join(", "); // Join all genre names with commas
+            }
+
+            if (data.genres && data.genres.data.length > 0) {
+                // If genres information exists and there are genres available
+                genreRaw = data.genres.data.map(function(genreData) {
+                    // Check if the genre is in genreMappingMessage, if yes, replace with the mapped value
+                    if (genreMappingMessage.hasOwnProperty(genreData.name)) {
+                        return genreMappingMessage[genreData.name];
+                    } else {
+                        return genreData.name;
+                    }
+                }).join(", "); // Join all genre names with commas
+            }
+
+            // Format tracklist
+            var tracklist = formatTracklist(data.tracks.data, artist, deezerLink, appleMusicURL, spotifyURL, qobuzURL);
+
+            // Autofill form fields with artist, album title, release date, release type, label, UPC code, and genre
+            autofillFields(artist, album, releaseDate, releaseTypeValue, releaseYear, label, labelForDescription, catalogueNumber, genre, genreRaw, imageUrl, tracklist, deezerLink);
+        });
+    });
+
+    // Update autofillFields function to include Apple Music, Spotify, and Qobuz URLs
+    function autofillFields(artist, album, releaseDate, releaseType, releaseYear, label, labelForDescription, catalogueNumber, genre, genreRaw, imageUrl, tracklist, deezerLink, appleMusicURL, spotifyURL, qobuzURL) {
+        // Autofill existing fields
+        document.getElementById('artist').value = artist;
+        document.getElementById('title').value = album;
+        var initialYear = extractYear(releaseDate);
+        var releaseYear = extractYear(releaseDate);
+        document.getElementById('year').value = initialYear;
+        document.getElementById('releasetype').value = releaseType;
+        document.getElementById('remaster_year').value = releaseYear;
+        if (artist.toLowerCase() === label.toLowerCase()) {
+            label = "Self-Released";
+        }
+        if (artist.toLowerCase().replace(/\s/g, '') === label.toLowerCase().replace(/\s/g, '')) {
+            label = "Self-Released";
+        }
+        document.getElementById('remaster_record_label').value = label;
+        document.getElementById('remaster_catalogue_number').value = catalogueNumber;
+        document.getElementById('format').value = 'FLAC';
+        document.getElementById('media').value = 'WEB';
+        document.getElementById('tags').value = genre;
+        document.getElementById('image').value = imageUrl;
+        var albumDesc = generateAlbumDescription(artist, album, releaseType, labelForDescription, catalogueNumber, releaseDate, genre, genreRaw, tracklist);
+        document.getElementById('album_desc').value = albumDesc;
+        var albumPreviewHTML = `<tr>
+            <td class="label">Album Art Preview:</td>
+            <td><img id="yadg_image_preview" src="${imageUrl}" width="300px"></td>
+        </tr>`;
+        var imageInputRow = document.getElementById('image').closest('tr');
+        imageInputRow.insertAdjacentHTML('beforebegin', albumPreviewHTML);
+
+        // Add the additional URLs to the tracklist
+        tracklist += `\n\n[b]More information:[/b] `;
+        if (deezerLink) {
+            tracklist += `[url=${deezerLink}]Deezer[/url] `;
+        }
+        if (appleMusicURL) {
+            tracklist += `[url=${appleMusicURL}]Apple Music[/url] `;
+        }
+        if (spotifyURL) {
+            tracklist += `[url=${spotifyURL}]Spotify[/url] `;
+        }
+        if (qobuzURL) {
+            tracklist += `[url=${qobuzURL}]Qobuz[/url] `;
+        }
+    }
+
+    // Function to extract year (YYYY) from a date string
+    function extractYear(dateString) {
+        var match = dateString.match(/\d{4}/);
+        return match ? match[0] : '';
+    }
+
+    // Function to format duration from seconds to MM:SS
+    function formatDuration(seconds) {
+        var minutes = Math.floor(seconds / 60);
+        var remainingSeconds = seconds % 60;
+        return `${padNumber(minutes)}:${padNumber(remainingSeconds)}`;
+    }
+
+    // Function to pad single digit numbers with leading zero
+    function padNumber(number) {
+        return number < 10 ? `0${number}` : number;
+    }
+
+    // Function to format tracklist
+    function formatTracklist(tracklistData, artistName, deezerLink, appleMusicURL, spotifyURL, qobuzURL) {
+        let tracklist = "[size=4][b]Tracklist[/b][/size]\n";
+        let totalLengthSeconds = 0;
+        if (Array.isArray(tracklistData) && tracklistData.length > 0) {
+            tracklistData.forEach((track, index) => {
+                let trackNumber = index + 1;
+                let trackTitle = `${artistName} - ${track.title}`;
+                let trackDuration = formatDuration(track.duration);
+                if (track.title.includes("https://www.deezer.com/")) {
+                    trackTitle = track.title;
+                }
+                tracklist += `[b]${padNumber(trackNumber)}.[/b] ${trackTitle} [i](${trackDuration})[/i]\n`;
+                totalLengthSeconds += track.duration;
+            });
+        }
+        let totalLength = formatDuration(totalLengthSeconds);
+        tracklist += `\n[b]Total length:[/b] ${totalLength}`;
+
+        tracklist += `\n\n[b]More information:[/b] `;
+        var links = {
+            "Apple": appleMusicURL,
+            "Deezer": deezerLink,
+            "Spotify": spotifyURL,
+            "Qobuz": qobuzURL
+        };
+        var formattedText = "";
+        for (var linkName in links) {
+            if (links.hasOwnProperty(linkName) && links[linkName]) {
+                formattedText += `[url=${links[linkName]}]${linkName}[/url] | `;
+            }
+        }
+        if (formattedText.trim() !== '') {
+            formattedText = formattedText.slice(0, -3); // Remove the last ' | ' from the formattedText
+            tracklist += formattedText;
+        }
+
+        return tracklist;
+    }
+
+})();
